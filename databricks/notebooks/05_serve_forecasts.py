@@ -10,7 +10,8 @@ import pandas as pd
 import yaml
 from pyspark.sql import functions as F
 
-from retailcast.data.hierarchy import build_hierarchy
+from retailcast.data.hierarchy import build_hierarchy, upper_panel
+from retailcast.models.baselines import ETSForecaster
 from retailcast.reconciliation.mint import reconcile_forecast_frame
 
 dbutils.widgets.text("config", "/Workspace/Repos/retailcast/configs/databricks.yaml")
@@ -28,8 +29,20 @@ fc["date"] = pd.to_datetime(fc["date"])
 meta = spark.table(T["silver_sales_long"]).select("series_id", "item_id", "cat_id", "store_id").distinct().toPandas()
 hier = build_hierarchy(meta)
 
-# In-sample residuals for MinT: last 56 days of 1-step-ahead errors from the forecast model are
-# stored alongside the run when available; fall back to structural WLS otherwise.
+# Independent base forecasts for the upper nodes (store / store x category / total) from an ETS
+# model on the aggregated series; without them every method collapses to bottom-up.
+panel = spark.table(T["silver_sales_long"]).toPandas()
+panel["date"] = pd.to_datetime(panel["date"])
+up_panel = upper_panel(panel, hier)
+horizon = int(fc["h"].max())
+up_last = up_panel.sort_values("date").groupby("series_id").tail(1)
+up_future = up_last.loc[up_last.index.repeat(horizon)].copy()
+up_future["date"] = list(pd.date_range(up_panel["date"].max() + pd.Timedelta(days=1), periods=horizon)) * len(up_last)
+ets = ETSForecaster(quantiles=[]).fit(up_panel)
+upper_fc = ets.predict(up_future.drop(columns=["y"]))
+
+# In-sample residuals for MinT: upper residuals from ETS, bottom residuals from the stored
+# model residual table when present, otherwise fall back to structural WLS.
 residuals = None
 try:
     residuals = spark.table(f"{T['forecasts']}_residuals").where(F.col("run_id") == latest).toPandas()
@@ -37,7 +50,8 @@ try:
 except Exception:  # noqa: BLE001
     method = "wls_struct" if method.startswith("mint") else method
 
-rec = reconcile_forecast_frame(fc[["series_id", "date", "h", "yhat"] + [c for c in fc if c.startswith("q_")]], hier, method, residuals)
+cols = ["series_id", "date", "h", "yhat"] + [c for c in fc if c.startswith("q_")]
+rec = reconcile_forecast_frame(fc[cols], hier, method, residuals, upper_fc=upper_fc)
 rec = rec.merge(meta, on="series_id")
 rec["run_id"], rec["reconciliation"], rec["published_at"] = latest, method, pd.Timestamp.utcnow()
 

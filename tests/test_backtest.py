@@ -24,6 +24,7 @@ def test_backtest_with_reconciliation(panel):
         reconciliations=["none", "bottom_up", "mint_shrink", "wls_struct"],
         quantiles=QUANTILES,
         verbose=False,
+        upper_factory=lambda: SeasonalNaive(quantiles=QUANTILES, horizon=14),
     )
     seen = []
     bt.on_fold = seen.append
@@ -65,8 +66,12 @@ def test_backtest_with_reconciliation(panel):
     tot = res.metrics[res.metrics["metric"] == "wrmsse_total"].pivot_table(
         index=["fold", "model"], columns="reconciliation", values="value"
     )
-    assert not np.allclose(tot["mint_shrink"], tot["bottom_up"])
-    assert not np.allclose(tot["none"], tot["bottom_up"])
+    lg = tot.xs("lightgbm", level="model")
+    assert not np.allclose(lg["mint_shrink"], lg["bottom_up"])
+    assert not np.allclose(lg["none"], lg["bottom_up"])
+    # coverage must survive reconciliation (quantiles are shifted, not projected)
+    cov = res.metrics[res.metrics["metric"] == "coverage_90"]
+    assert cov["value"].min() > 0.75
     assert len(res.timings) == 4
     assert len(seen) == 16
     # bottom-up reconciliation of bottom-level base forecasts must not change bottom-level WAPE

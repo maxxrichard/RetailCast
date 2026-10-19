@@ -54,8 +54,10 @@ All models share `fit(train_long)` / `predict(future_long)` and return a long `F
 
 `reconcile(yhat, S, method, residuals)` returns coherent forecasts. The MinT weight matrix uses
 Schäfer–Strimmer shrinkage of the in-sample residual covariance toward its diagonal, which is
-numerically stable for n_nodes ≫ n_obs. `reconcile_forecast_frame` applies the same projection
-to each quantile column and restores monotonicity across quantiles.
+numerically stable for n_nodes ≫ n_obs. `reconcile_forecast_frame` takes optional independent upper-level
+forecasts (`upper_fc`); quantile columns are scaled by the point adjustment of their series
+(`adjust_quantiles`; not projected, since quantiles do not add up across levels) and re-sorted
+to stay monotone.
 
 ## Backtesting
 
@@ -72,6 +74,7 @@ method turns into coherent forecasts:
 | `bottom_up` | sum of bottom forecasts | bottom model |
 | `ols`, `wls_struct`, `wls_var`, `mint_*` | optimal combination of all levels | adjusted |
 
+`upper_factory` lets the upper levels use a different model (the CLI defaults to ETS there).
 Results are returned as tidy frames (`metrics`, `forecasts`, `timings`) with
 `leaderboard()` / `vs_baseline()` helpers.
 

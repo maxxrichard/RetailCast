@@ -94,6 +94,10 @@ def backtest(
     ),
     n_folds: int | None = None,
     num_boost_round: int | None = None,
+    upper_model: str = typer.Option(
+        "ets",
+        help="model fitted on the aggregated store/category/total series; 'same' reuses each model",
+    ),
     out: Path | None = None,
 ) -> None:
     """Run the rolling-origin backtest with hierarchical evaluation and reconciliation."""
@@ -132,6 +136,9 @@ def backtest(
         step=bt_cfg.step,
         reconciliations=list(bt_cfg.reconcile),
         quantiles=list(cfg.quantiles),
+        upper_factory=None
+        if upper_model == "same"
+        else (lambda: make_model(upper_model, cfg.horizon, list(cfg.quantiles))),
     )
     ml = cfg.get("mlflow")
     with tracked_run(
@@ -145,7 +152,7 @@ def backtest(
         lb = res.leaderboard()
         _print_df(lb.reset_index().set_index("model"), "Backtest leaderboard (mean over folds)")
         _print_df(
-            res.vs_baseline(), "Relative to seasonal naive (WRMSSE, no reconciliation)"
+            res.vs_baseline(), "Relative to seasonal naive (article-level WRMSSE)"
         ) if "seasonal_naive" in names else None
         best = lb.iloc[0]
         log_metrics(run, {f"best_{k}": v for k, v in best.items()})

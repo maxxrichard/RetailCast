@@ -12,6 +12,10 @@ category, total). Reconciliation methods then combine them:
 * ``ols`` / ``wls_struct`` / ``wls_var`` / ``mint_shrink`` / ``mint_sample`` – optimal
   combinations of all levels (coherent), the last three using in-sample residuals.
 
+Quantile forecasts are not additive across levels, so they are *not* projected. Each quantile
+path is instead scaled by its node's point-forecast adjustment (``adjust_quantiles``), which
+keeps the base model's uncertainty shape while following the reconciled level.
+
 Metrics are computed per hierarchy level (WRMSSE, M5 definition), at the bottom level (WAPE,
 scaled pinball loss, interval coverage) and for the total.
 """
@@ -29,7 +33,7 @@ import pandas as pd
 from retailcast.data.hierarchy import Hierarchy, build_hierarchy, upper_panel
 from retailcast.evaluation.metrics import coverage, scaled_pinball_loss, wape, wrmsse_hierarchical
 from retailcast.models.base import BaseForecaster, quantile_col, to_wide
-from retailcast.reconciliation.mint import Reconciler
+from retailcast.reconciliation.mint import Reconciler, adjust_quantiles
 
 NEEDS_RESIDUALS = ("mint_shrink", "mint_sample", "wls_var")
 NEEDS_UPPER = ("ols", "wls_struct", "wls_var", "mint_shrink", "mint_sample", "none")
@@ -58,8 +62,8 @@ class BacktestResult:
     def vs_baseline(
         self,
         baseline: str = "seasonal_naive",
-        metric: str = "wrmsse_mean",
-        reconciliation: str = "bottom_up",
+        metric: str = "wrmsse_bottom",
+        reconciliation: str = "none",
     ) -> pd.DataFrame:
         m = self.metrics[
             (self.metrics["metric"] == metric) & (self.metrics["reconciliation"] == reconciliation)
@@ -78,6 +82,7 @@ class RollingOriginBacktest:
     hierarchy_levels: list[list[str]] | None = None
     quantiles: list[float] = field(default_factory=lambda: [0.05, 0.25, 0.5, 0.75, 0.95])
     fit_upper_levels: bool = True  # fit a second model instance on the aggregated nodes
+    upper_factory: Callable[[], BaseForecaster] | None = None  # model for the upper levels
     verbose: bool = True
     on_fold: Callable[[dict[str, Any]], None] | None = None
 
@@ -169,7 +174,10 @@ class RollingOriginBacktest:
                 if upper is not None:
                     u_train = upper[upper["date"] <= origin]
                     u_test = upper[(upper["date"] > origin) & (upper["date"] <= end)]
-                    model_u, fc_u, t_fit_u, t_pred_u = self._fit_predict(factory, u_train, u_test)
+                    up_factory = self.upper_factory or factory
+                    model_u, fc_u, t_fit_u, t_pred_u = self._fit_predict(
+                        up_factory, u_train, u_test
+                    )
                     t_fit, t_pred = t_fit + t_fit_u, t_pred + t_pred_u
                 timing_rows.append(
                     {"fold": fold, "model": name, "fit_s": t_fit, "predict_s": t_pred}
@@ -203,17 +211,7 @@ class RollingOriginBacktest:
                         continue
                     rec = Reconciler(hier, method, resid_n)
                     pred_n = rec.reconcile_wide(base_n)
-                    pred_q = {q: rec.reconcile_wide(v) for q, v in base_q.items()}
-                    if pred_q:
-                        qs = sorted(pred_q)
-                        stacked = np.stack([pred_q[q].to_numpy() for q in qs], axis=-1)
-                        stacked = np.maximum.accumulate(stacked, axis=-1)
-                        pred_q = {
-                            q: pd.DataFrame(
-                                stacked[..., i], index=pred_n.index, columns=pred_n.columns
-                            )
-                            for i, q in enumerate(qs)
-                        }
+                    pred_q = adjust_quantiles(base_q, base_n, pred_n)
 
                     scores = self._score(y_true_n, pred_n, train_n, hier, pred_q, prices_n)
                     for metric, value in scores.items():

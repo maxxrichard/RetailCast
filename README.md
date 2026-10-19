@@ -48,24 +48,36 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # add [stats] for ETS/ARIMA, [tft] for the transformer, [spark] for Databricks
 ```
 
-Run a complete backtest on a synthetic hierarchical panel in under a minute:
+Run a complete backtest on a synthetic hierarchical panel (about ten minutes on a laptop; drop `ets` or lower `--n-folds` for a quicker run):
 
 ```bash
 retailcast synth --n-items 200 --n-days 400           # 600 series, 240k rows -> data/processed/synthetic.parquet
-retailcast backtest --models seasonal_naive,ets,lightgbm --n-folds 3
+retailcast backtest --models seasonal_naive,ets,lightgbm --n-folds 3 --num-boost-round 300
 ```
 
-```
-          Backtest leaderboard (mean over folds)
-┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
-┃ model          ┃ reconciliation ┃ wrmsse_mean ┃ wrmsse_bottom┃  wape  ┃ pinball_mean ┃ coverage_90 ┃
-┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-│ lightgbm       │ mint_shrink    │      0.6012 │       0.7861 │ 0.3115 │       0.1710 │      0.9064 │
-│ lightgbm       │ none           │      0.6133 │       0.7861 │ 0.3115 │       0.1724 │      0.9064 │
-│ ets            │ mint_shrink    │      0.6598 │       0.8420 │ 0.3488 │       0.1951 │      0.8713 │
-│ seasonal_naive │ none           │      0.8249 │       1.0027 │ 0.4482 │       0.2510 │      0.8355 │
-└────────────────┴────────────────┴─────────────┴──────────────┴────────┴──────────────┴─────────────┘
-```
+Leaderboard written by the command above (synthetic panel, 600 series, 3 folds × 28 days,
+LightGBM capped at 300 rounds; `retailcast backtest` prints the same table):
+
+| model | reconciliation | WRMSSE (mean of levels) | WRMSSE (article) | WAPE (article) | scaled pinball | 90 % coverage |
+|---|---|---:|---:|---:|---:|---:|
+| lightgbm | wls_struct | 0.733 | 0.831 | 0.751 | 0.289 | 0.938 |
+| ets | wls_struct | 0.739 | 0.853 | 0.767 | 0.319 | 0.927 |
+| lightgbm | none | 0.749 | 0.831 | 0.735 | 0.274 | 0.911 |
+| ets | none | 0.755 | 0.854 | 0.747 | 0.284 | 0.881 |
+| lightgbm | mint_shrink | 0.789 | 0.826 | 0.738 | 0.272 | 0.925 |
+| seasonal_naive | wls_struct | 0.808 | 1.129 | 0.975 | 0.413 | 0.757 |
+| ets | mint_shrink | 0.814 | 0.849 | 0.751 | 0.283 | 0.898 |
+| seasonal_naive | none | 0.826 | 1.136 | 0.969 | 0.361 | 0.884 |
+| seasonal_naive | mint_shrink | 0.832 | 1.125 | 0.964 | 0.363 | 0.775 |
+| seasonal_naive | bottom_up | 0.977 | 1.136 | 0.969 | 0.361 | 0.884 |
+| lightgbm | bottom_up | 1.017 | 0.831 | 0.735 | 0.274 | 0.911 |
+| ets | bottom_up | 1.133 | 0.854 | 0.747 | 0.284 | 0.881 |
+
+Article-level WRMSSE relative to seasonal naive: LightGBM −27 %, ETS −25 %. Structural WLS
+reconciliation lifts the aggregate levels (mean WRMSSE 0.749 → 0.733) at a small article-level
+cost, and the quantile heads keep ~90 % nominal coverage before and after reconciliation. The
+`bottom_up` rows show why upper-level base forecasts matter: summing article forecasts alone is
+the worst option at the store and total level.
 
 Other entry points:
 
@@ -116,8 +128,11 @@ asserting both agree.
 **Reconciliation.** `build_hierarchy` creates the summing matrix *S* from series metadata.
 `reconcile` implements the linear family *ỹ = S (S′W⁻¹S)⁻¹ S′W⁻¹ ŷ* with *W* = I (OLS), the
 structural diagonal (WLS), residual variances, or the Schäfer–Strimmer shrinkage covariance (MinT).
-In-sample residuals come from each model's `fitted()` method. Quantile paths are reconciled with the
-same projection and re-sorted to stay monotone.
+In-sample residuals come from each model's `fitted()` method. Quantiles are not additive across
+levels, so each quantile path is scaled by its node's point-forecast adjustment instead of being
+projected (zeros of intermittent series stay zero), then re-sorted to stay monotone. The upper levels can use a different model than the
+articles (`--upper-model ets` is the CLI default: ETS on a handful of aggregate series beats a
+tree model trained on nine rows a day).
 
 **Evaluation.** `RollingOriginBacktest` refits each model at *n* origins spaced *step* days
 apart, once on the article-level panel and once on the aggregated store / category / total

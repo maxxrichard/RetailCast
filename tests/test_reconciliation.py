@@ -108,3 +108,42 @@ def test_reconcile_forecast_frame_quantiles_monotone(hier, panel):
     wide = fc.pivot(index="date", columns="series_id", values="yhat")
     nodes = rec.reconcile_bottom(wide)
     assert _coherent(nodes.to_numpy(), hier.S)
+
+
+def test_reconcile_forecast_frame_with_upper_forecasts(hier):
+    dates = pd.date_range("2020-01-01", periods=2)
+    rows = []
+    for sid in hier.bottom_ids:
+        for h, d in enumerate(dates, 1):
+            rows.append(
+                {"series_id": sid, "date": d, "h": h, "yhat": 2.0, "q_0.05": 0.0, "q_0.95": 5.0}
+            )
+    fc = pd.DataFrame(rows)
+    # upper forecasts say the total is 50% higher than the sum of the bottom forecasts
+    up = pd.DataFrame(
+        [
+            {"series_id": n, "date": d, "yhat": 2.0 * hier.S[hier.node_ids.index(n)].sum() * 1.5}
+            for n in hier.upper_ids
+            for d in dates
+        ]
+    )
+    out = reconcile_forecast_frame(fc, hier, "wls_struct", upper_fc=up)
+    assert out["yhat"].mean() > 2.0  # pulled toward the upper forecasts
+    ratio = out["yhat"] / 2.0
+    np.testing.assert_allclose(out["q_0.95"], 5.0 * ratio)  # quantiles scale with the point
+    np.testing.assert_allclose(out["q_0.05"], 0.0)  # zero quantiles stay zero
+    same = reconcile_forecast_frame(fc, hier, "wls_struct")  # bottom only -> unchanged
+    np.testing.assert_allclose(same["yhat"], 2.0)
+
+
+def test_adjust_quantiles_bounds_and_fallback():
+    from retailcast.reconciliation.mint import adjust_quantiles
+
+    idx = pd.date_range("2020-01-01", periods=2)
+    base = pd.DataFrame({"a": [1.0, 1.0], "b": [0.0, 0.0]}, index=idx)
+    rec = pd.DataFrame({"a": [10.0, 0.5], "b": [0.3, -1.0]}, index=idx)
+    q = {0.05: base * 0.0, 0.95: base * 2 + 1}
+    out = adjust_quantiles(q, base, rec, max_ratio=4.0)
+    np.testing.assert_allclose(out[0.95]["a"], [3.0 * 4.0, 3.0 * 0.5])  # ratio capped at 4
+    np.testing.assert_allclose(out[0.95]["b"], [1.0 + 0.3, 0.0])  # additive fallback, clipped
+    assert (out[0.05].to_numpy() <= out[0.95].to_numpy()).all()

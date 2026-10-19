@@ -23,6 +23,11 @@ import pandas as pd
 
 from retailcast.data.hierarchy import Hierarchy
 
+
+def quantile_col(q: float) -> str:
+    return f"q_{q:.2f}"
+
+
 METHODS = ["none", "bottom_up", "ols", "wls_struct", "wls_var", "mint_shrink", "mint_sample"]
 
 
@@ -109,6 +114,36 @@ def reconcile(
     return out
 
 
+def adjust_quantiles(
+    base_q: dict[float, pd.DataFrame],
+    base_point: pd.DataFrame,
+    rec_point: pd.DataFrame,
+    max_ratio: float = 4.0,
+) -> dict[float, pd.DataFrame]:
+    """Carry quantile paths along with the reconciled point forecast.
+
+    Quantiles are not additive across levels, so they are not projected. Each path is scaled by
+    ``rec_point / base_point`` (bounded to ``[1/max_ratio, max_ratio]``), which keeps zero
+    quantiles of intermittent series at zero; where the base point forecast is ~0 an additive
+    shift is used instead. Output is clipped at zero and sorted to stay monotone in the level.
+    """
+    ratio = (rec_point / base_point.where(base_point > 1e-6)).clip(1.0 / max_ratio, max_ratio)
+    shift = rec_point - base_point
+    out: dict[float, pd.DataFrame] = {}
+    for q, v in base_q.items():
+        v = v.reindex_like(rec_point)
+        scaled = (v * ratio).where(ratio.notna(), (v + shift).clip(lower=0.0))
+        out[q] = scaled.clip(lower=0.0)
+    if len(out) > 1:
+        qs = sorted(out)
+        stacked = np.maximum.accumulate(np.stack([out[q].to_numpy() for q in qs], axis=-1), axis=-1)
+        out = {
+            q: pd.DataFrame(stacked[..., i], index=rec_point.index, columns=rec_point.columns)
+            for i, q in enumerate(qs)
+        }
+    return out
+
+
 @dataclass
 class Reconciler:
     hierarchy: Hierarchy
@@ -134,23 +169,44 @@ class Reconciler:
 
 
 def reconcile_forecast_frame(
-    fc: pd.DataFrame, hierarchy: Hierarchy, method: str, residuals: pd.DataFrame | None = None
+    fc: pd.DataFrame,
+    hierarchy: Hierarchy,
+    method: str,
+    residuals: pd.DataFrame | None = None,
+    upper_fc: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Apply reconciliation to a long ForecastFrame (point + quantile columns), returning the
-    bottom-level long frame. Quantile columns are reconciled with the same G and re-sorted."""
+    """Reconcile a long bottom-level ForecastFrame and return the bottom-level long frame.
+
+    ``upper_fc`` holds independent base forecasts for the upper nodes (same long layout with
+    ``series_id`` = node id). Without it the aggregated bottom forecasts are already coherent and
+    every method reduces to bottom-up. Quantile columns are shifted by the point adjustment of
+    their series rather than projected, then re-sorted to stay monotone.
+    """
     if method == "none":
         return fc
     rec = Reconciler(hierarchy, method, residuals)
-    cols = ["yhat"] + [c for c in fc.columns if c.startswith("q_")]
+    base_b = fc.pivot(index="date", columns="series_id", values="yhat")
+    base_b = base_b.reindex(columns=hierarchy.bottom_ids).fillna(0.0)
+    base_n = hierarchy.aggregate(base_b)
+    if upper_fc is not None:
+        up = upper_fc.pivot(index="date", columns="series_id", values="yhat")
+        base_n[hierarchy.upper_ids] = up.reindex(index=base_n.index, columns=hierarchy.upper_ids)
+        base_n = base_n.fillna(0.0)
+    pred_n = rec.reconcile_wide(base_n)
+    qcols = [c for c in fc.columns if c.startswith("q_")]
+    base_q = {
+        float(c[2:]): fc.pivot(index="date", columns="series_id", values=c)
+        .reindex(columns=hierarchy.bottom_ids)
+        .fillna(0.0)
+        for c in qcols
+    }
+    rec_q = adjust_quantiles(base_q, base_n[hierarchy.bottom_ids], pred_n[hierarchy.bottom_ids])
     out = fc[["series_id", "date", "h"]].copy()
-    for c in cols:
-        wide = fc.pivot(index="date", columns="series_id", values=c)
-        nodes = rec.reconcile_bottom(wide)
-        bottom = nodes[hierarchy.bottom_ids]
-        long = bottom.stack().rename(c).reset_index()
-        long.columns = ["date", "series_id", c]
-        out = out.merge(long, on=["date", "series_id"], how="left")
-    qcols = sorted([c for c in out.columns if c.startswith("q_")], key=lambda c: float(c[2:]))
-    if len(qcols) > 1:
-        out[qcols] = np.maximum.accumulate(out[qcols].to_numpy(dtype=float), axis=1)
+    long = pred_n[hierarchy.bottom_ids].stack().rename("yhat").reset_index()
+    long.columns = ["date", "series_id", "yhat"]
+    out = out.merge(long, on=["date", "series_id"], how="left")
+    for q, wq in rec_q.items():
+        ql = wq.stack().rename(quantile_col(q)).reset_index()
+        ql.columns = ["date", "series_id", quantile_col(q)]
+        out = out.merge(ql, on=["date", "series_id"], how="left")
     return out
