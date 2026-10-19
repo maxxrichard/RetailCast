@@ -1,0 +1,17 @@
+# Rolling-origin backtest over the final folds of the series.
+extends: default.yaml
+
+backtest:
+  n_folds: 5
+  step: 28                     # days between consecutive origins
+  horizon: 28
+  refit: true
+  models: [seasonal_naive, ets, arima, lightgbm]
+  reconcile: [none, bottom_up, mint_shrink]
+  metrics: [wrmsse, wape, rmsse, pinball, coverage]
+  output_dir: artifacts/backtest
+
+mlflow:
+  enabled: false
+  experiment: /retailcast/backtest
+  tracking_uri: null

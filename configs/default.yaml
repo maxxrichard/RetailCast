@@ -1,0 +1,32 @@
+# RetailCast default configuration.
+# Values here are overridden by the per-task configs (backtest.yaml, lightgbm.yaml, ...)
+# and by CLI flags.
+
+data:
+  source: synthetic            # synthetic | m5 | favorita
+  path: data/processed/synthetic.parquet
+  m5_dir: data/raw/m5
+  favorita_dir: data/raw/favorita
+  date_col: date
+  id_col: series_id
+  target_col: y
+  hierarchy: [store_id, cat_id, item_id]   # top -> leaf (left to right)
+
+horizon: 28
+freq: D
+
+features:
+  lags: [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]
+  rolling_windows: [7, 14, 28, 56]
+  rolling_stats: [mean, std, max]
+  price_features: true
+  promo_features: true
+  calendar_features: true
+  horizon_safe: true            # only use lags >= horizon for direct-multi-horizon models
+
+training:
+  min_history: 90
+  drop_leading_zeros: true
+  sample_weight: revenue        # none | revenue | volume
+
+quantiles: [0.05, 0.25, 0.5, 0.75, 0.95]

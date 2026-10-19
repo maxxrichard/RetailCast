@@ -1,0 +1,26 @@
+# Settings for the PySpark / Delta Lake pipeline on Databricks.
+catalog: retailcast
+schema: forecasting
+
+tables:
+  bronze_sales: retailcast.forecasting.bronze_sales
+  bronze_calendar: retailcast.forecasting.bronze_calendar
+  bronze_prices: retailcast.forecasting.bronze_prices
+  silver_sales_long: retailcast.forecasting.silver_sales_long
+  feature_store: retailcast.forecasting.features_daily
+  forecasts: retailcast.forecasting.forecasts
+  backtest_metrics: retailcast.forecasting.backtest_metrics
+
+feature_store:
+  primary_keys: [series_id, date]
+  timestamp_key: date
+  partition_by: [store_id]
+  z_order_by: [series_id, date]
+
+mlflow:
+  experiment: /Shared/retailcast
+  registered_model: retailcast_lightgbm_direct
+
+spark:
+  shuffle_partitions: 400
+  adaptive: true

@@ -1,0 +1,31 @@
+{
+  "name": "retailcast-daily-forecast",
+  "schedule": { "quartz_cron_expression": "0 0 3 * * ?", "timezone_id": "Europe/Berlin", "pause_status": "UNPAUSED" },
+  "max_concurrent_runs": 1,
+  "git_source": { "git_url": "https://github.com/maxxrichard/RetailCast", "git_provider": "gitHub", "git_branch": "main" },
+  "job_clusters": [
+    {
+      "job_cluster_key": "retailcast-cluster",
+      "new_cluster": {
+        "spark_version": "15.4.x-cpu-ml-scala2.12",
+        "node_type_id": "Standard_E16ds_v5",
+        "num_workers": 8,
+        "spark_conf": { "spark.sql.shuffle.partitions": "400", "spark.sql.adaptive.enabled": "true" },
+        "custom_tags": { "project": "retailcast" }
+      }
+    }
+  ],
+  "tasks": [
+    { "task_key": "ingest_bronze", "job_cluster_key": "retailcast-cluster",
+      "notebook_task": { "notebook_path": "databricks/notebooks/01_ingest_bronze", "source": "GIT" },
+      "libraries": [{ "pypi": { "package": "retailcast[spark] @ git+https://github.com/maxxrichard/RetailCast" } }] },
+    { "task_key": "feature_store", "depends_on": [{ "task_key": "ingest_bronze" }], "job_cluster_key": "retailcast-cluster",
+      "notebook_task": { "notebook_path": "databricks/notebooks/02_feature_store_silver", "source": "GIT" } },
+    { "task_key": "train", "depends_on": [{ "task_key": "feature_store" }], "job_cluster_key": "retailcast-cluster",
+      "notebook_task": { "notebook_path": "databricks/notebooks/03_train_lightgbm", "source": "GIT" } },
+    { "task_key": "backtest", "depends_on": [{ "task_key": "feature_store" }], "job_cluster_key": "retailcast-cluster",
+      "notebook_task": { "notebook_path": "databricks/notebooks/04_backtest_and_reconcile", "source": "GIT" } },
+    { "task_key": "serve", "depends_on": [{ "task_key": "train" }], "job_cluster_key": "retailcast-cluster",
+      "notebook_task": { "notebook_path": "databricks/notebooks/05_serve_forecasts", "source": "GIT" } }
+  ]
+}
