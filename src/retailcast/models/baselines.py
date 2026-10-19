@@ -91,10 +91,18 @@ class _StatsForecastWrapper(BaseForecaster):
         sf_df = train[["series_id", "date", "y"]].rename(
             columns={"series_id": "unique_id", "date": "ds"}
         )
+        self.sf_df_ = sf_df
         self.sf_ = StatsForecast(models=self._models(), freq="D", n_jobs=-1)
-        self.sf_.fit(sf_df)
+        self.fitted_values_: pd.DataFrame | None = None
         self._numpy = False
         return self
+
+    def fitted(self) -> pd.DataFrame | None:
+        if getattr(self, "_numpy", False):
+            idx = self.wide_.index[self.season :]
+            resid = pd.DataFrame(self.resid_, index=idx, columns=self.wide_.columns)
+            return self.wide_.loc[idx] - resid
+        return self.fitted_values_  # populated by predict() (statsforecast computes both at once)
 
     def predict(self, future: pd.DataFrame) -> ForecastFrame:
         self._check_fitted()
@@ -103,9 +111,15 @@ class _StatsForecastWrapper(BaseForecaster):
         dates = _future_dates(future)
         h = len(dates)
         levels = sorted({int(round(abs(2 * q - 1) * 100)) for q in self.quantiles if q != 0.5})
-        fc = self.sf_.predict(h=h, level=levels or None)
+        fc = self.sf_.forecast(df=self.sf_df_, h=h, level=levels or None, fitted=True)
         if "unique_id" not in fc.columns:  # older statsforecast returns unique_id as the index
             fc = fc.reset_index()
+        fv = self.sf_.forecast_fitted_values()
+        if "unique_id" not in fv.columns:
+            fv = fv.reset_index()
+        fit_col = [c for c in fv.columns if c not in ("unique_id", "ds", "y")][0]
+        self.fitted_values_ = fv.pivot(index="ds", columns="unique_id", values=fit_col)
+        self.fitted_values_.index = pd.DatetimeIndex(self.fitted_values_.index)
         model_col = [
             c
             for c in fc.columns

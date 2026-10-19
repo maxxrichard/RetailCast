@@ -26,3 +26,18 @@ def test_aggregate_is_coherent(panel):
     for s in ["STORE_0", "STORE_1"]:
         cols = [c for c in wide.columns if c.endswith(s)]
         np.testing.assert_allclose(nodes[f"store_id={s}"], wide[cols].sum(axis=1))
+
+
+def test_upper_panel(panel):
+    from retailcast.data.hierarchy import upper_panel
+
+    meta = panel.drop_duplicates("series_id")[["series_id", "item_id", "cat_id", "store_id"]]
+    h = build_hierarchy(meta)
+    up = upper_panel(panel, h)
+    assert set(up["series_id"]) == set(h.upper_ids)
+    assert len(up) == len(h.upper_ids) * panel["date"].nunique()
+    tot = up[up["series_id"] == "total"].set_index("date")["y"]
+    np.testing.assert_allclose(tot.to_numpy(), to_wide(panel).sum(axis=1).to_numpy())
+    assert h.node_keys["store_id=STORE_0"] == {"store_id": "STORE_0"}
+    assert (up[up["series_id"] == "total"]["store_id"] == "ALL").all()
+    assert up["sell_price"].gt(0).all()

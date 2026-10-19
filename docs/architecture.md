@@ -60,9 +60,24 @@ to each quantile column and restores monotonicity across quantiles.
 ## Backtesting
 
 `RollingOriginBacktest(horizon, n_folds, step, reconciliations)` yields origins
-`T − horizon − k·step`, refits each model per origin, aggregates forecasts to all nodes, applies
-each reconciliation method and scores. Results are returned as tidy frames
-(`metrics`, `forecasts`, `timings`) with `leaderboard()` / `vs_baseline()` helpers.
+`T − horizon − k·step` and, per origin and model, fits **two** instances: one on the bottom-level
+panel and one on the aggregated upper-node panel produced by `upper_panel` (store, store ×
+category, total; volume-weighted prices and promo shares). The upper forecasts and the
+bottom forecasts together form the base forecasts ŷ for every node, which each reconciliation
+method turns into coherent forecasts:
+
+| method | upper levels | bottom level |
+|---|---|---|
+| `none` | upper model (incoherent) | bottom model |
+| `bottom_up` | sum of bottom forecasts | bottom model |
+| `ols`, `wls_struct`, `wls_var`, `mint_*` | optimal combination of all levels | adjusted |
+
+Results are returned as tidy frames (`metrics`, `forecasts`, `timings`) with
+`leaderboard()` / `vs_baseline()` helpers.
+
+**Scaling note.** MinT needs an n_nodes × n_nodes covariance; for the full M5 hierarchy
+(30k+ nodes) apply it per store (`build_hierarchy` on a store subset, as notebook 04 does) or
+use the structural WLS weights, which are diagonal.
 
 ## Databricks pipeline
 

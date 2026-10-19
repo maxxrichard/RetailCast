@@ -42,17 +42,21 @@ def shrink_covariance(resid: np.ndarray) -> tuple[np.ndarray, float]:
     sd = np.where(sd > 0, sd, 1.0)
     x = (resid - resid.mean(axis=0)) / sd
     r = (x.T @ x) / (n - 1)
-    # variance of the correlation estimates (off-diagonal)
-    v = np.zeros_like(r)
-    for i in range(n):
-        xi = np.outer(x[i], x[i])
-        v += (xi - r) ** 2
-    v *= n / ((n - 1) ** 3)
+    # variance of the correlation estimates: sum_i (x_i x_i' - r)^2 = (x^2)'(x^2) - (n-2) r^2
+    x2 = x**2
+    v = (x2.T @ x2 - (n - 2) * r**2) * n / ((n - 1) ** 3)
     off = ~np.eye(p, dtype=bool)
     denom = np.sum(r[off] ** 2)
     lam = float(np.clip(np.sum(v[off]) / denom, 0.0, 1.0)) if denom > 0 else 1.0
     W = lam * diag + (1 - lam) * cov
     return W, lam
+
+
+def _regularize(W: np.ndarray, rel: float = 1e-3) -> np.ndarray:
+    """Floor the diagonal so nodes with (near-)zero residual variance don't blow up W^-1."""
+    d = np.diag(W)
+    floor = max(rel * float(np.mean(d[d > 0])) if (d > 0).any() else 1.0, 1e-8)
+    return W + floor * np.eye(len(W))
 
 
 def _projection(S: np.ndarray, W: np.ndarray | None, method: str) -> np.ndarray:
@@ -65,11 +69,12 @@ def _projection(S: np.ndarray, W: np.ndarray | None, method: str) -> np.ndarray:
         W = np.eye(n_nodes)
     elif method == "wls_struct":
         W = np.diag(S.sum(axis=1))
-    W_inv = (
-        np.linalg.pinv(W) if method in ("mint_shrink", "mint_sample") else np.diag(1.0 / np.diag(W))
-    )
-    A = S.T @ W_inv @ S
-    return np.linalg.solve(A, S.T @ W_inv)
+    if method in ("mint_shrink", "mint_sample"):
+        W_inv_S = np.linalg.solve(W, S)
+    else:
+        W_inv_S = S / np.diag(W)[:, None]
+    A = S.T @ W_inv_S  # = S' W^-1 S
+    return np.linalg.solve(A, W_inv_S.T)
 
 
 def reconcile(
@@ -93,15 +98,15 @@ def reconcile(
         if residuals is None:
             raise ValueError("mint_shrink needs residuals")
         W, _ = shrink_covariance(residuals)
-        W += 1e-8 * np.eye(len(W))
+        W = _regularize(W)
     elif method == "mint_sample":
         if residuals is None:
             raise ValueError("mint_sample needs residuals")
-        W = np.cov(np.asarray(residuals, dtype=float), rowvar=False, ddof=1) + 1e-8 * np.eye(
-            S.shape[0]
-        )
+        W = _regularize(np.cov(np.asarray(residuals, dtype=float), rowvar=False, ddof=1))
     G = _projection(S, W, method)
-    return np.asarray(yhat, dtype=float) @ (S @ G).T
+    out = np.asarray(yhat, dtype=float) @ (S @ G).T
+    out[np.abs(out) < 1e-9] = 0.0  # remove floating-point dust around zero
+    return out
 
 
 @dataclass

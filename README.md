@@ -120,9 +120,10 @@ In-sample residuals come from each model's `fitted()` method. Quantile paths are
 same projection and re-sorted to stay monotone.
 
 **Evaluation.** `RollingOriginBacktest` refits each model at *n* origins spaced *step* days
-apart, aggregates truth and forecasts to every hierarchy node, and reports WRMSSE per level
-(revenue-weighted RMSSE, M5 definition), WAPE, scaled pinball loss per quantile and 50/90 %
-interval coverage, for every (model × reconciliation) combination.
+apart, once on the article-level panel and once on the aggregated store / category / total
+series, so every hierarchy node has an independent base forecast for reconciliation to combine.
+It reports WRMSSE per level (revenue-weighted RMSSE, M5 definition), WAPE, scaled pinball loss
+per quantile and 50/90 % interval coverage, for every (model × reconciliation) combination.
 
 ---
 

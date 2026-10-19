@@ -7,7 +7,7 @@ backtest:
   horizon: 28
   refit: true
   models: [seasonal_naive, ets, arima, lightgbm]
-  reconcile: [none, bottom_up, mint_shrink]
+  reconcile: [none, bottom_up, wls_struct, mint_shrink]
   metrics: [wrmsse, wape, rmsse, pinball, coverage]
   output_dir: artifacts/backtest
 

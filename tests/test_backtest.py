@@ -60,6 +60,13 @@ def test_backtest_with_reconciliation(panel):
     assert "wrmsse_mean" in lb.columns
     vs = res.vs_baseline()
     assert vs.loc["seasonal_naive", "rel_change"] == 0.0
+    # upper-level base forecasts come from a separate model, so MinT must differ from bottom-up
+    # at the aggregate levels while bottom-up and none agree at the bottom level
+    tot = res.metrics[res.metrics["metric"] == "wrmsse_total"].pivot_table(
+        index=["fold", "model"], columns="reconciliation", values="value"
+    )
+    assert not np.allclose(tot["mint_shrink"], tot["bottom_up"])
+    assert not np.allclose(tot["none"], tot["bottom_up"])
     assert len(res.timings) == 4
     assert len(seen) == 16
     # bottom-up reconciliation of bottom-level base forecasts must not change bottom-level WAPE
